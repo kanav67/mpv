@@ -967,7 +967,7 @@ static void update_stream_selection_state(struct demux_internal *in,
     for (int n = 0; n < in->num_ranges; n++) {
         struct demux_cached_range *range = in->ranges[n];
 
-        if (!ds->selected)
+        if (!ds->selected && ds->type != STREAM_AUDIO)
             clear_queue(range->streams[ds->index]);
 
         update_seek_ranges(range);
@@ -2182,7 +2182,7 @@ static void add_packet_locked(struct sh_stream *stream, demux_packet_t *dp)
 
     struct demux_queue *queue = ds->queue;
 
-    bool drop = !ds->selected || in->seeking || ds->sh->attached_picture;
+    bool drop = (!ds->selected && stream->type != STREAM_AUDIO) || in->seeking || ds->sh->attached_picture;
 
     if (!drop) {
         // If libavformat splits packets, some packets will have pos unset, so
@@ -2233,7 +2233,7 @@ static void add_packet_locked(struct sh_stream *stream, demux_packet_t *dp)
 
     // (keep in mind that even if the reader went out of data, the queue is not
     // necessarily empty due to the backbuffer)
-    if (!ds->reader_head && (!ds->skip_to_keyframe || dp->keyframe)) {
+    if (ds->selected && !ds->reader_head && (!ds->skip_to_keyframe || dp->keyframe)) {
         ds->reader_head = dp;
         ds->skip_to_keyframe = false;
     }
@@ -4287,8 +4287,18 @@ static bool select_track(struct demux_internal *in,
     ds->selected = selected;
     update_stream_selection_state(in, ds);
     in->tracks_switched = true;
-    if (ds->selected)
-        refresh_track(in, stream, ref_pts);
+    if (ds->selected) {
+        if (ds->type == STREAM_AUDIO && ds->queue->head) {
+            struct demux_packet *target = find_seek_target(ds->queue, ref_pts, 0);
+            if (target) {
+                ds->reader_head = target;
+            } else {
+                refresh_track(in, stream, ref_pts);
+            }
+        } else {
+            refresh_track(in, stream, ref_pts);
+        }
+    }
     return true;
 }
 
