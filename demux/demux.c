@@ -2233,7 +2233,7 @@ static void add_packet_locked(struct sh_stream *stream, demux_packet_t *dp)
 
     // (keep in mind that even if the reader went out of data, the queue is not
     // necessarily empty due to the backbuffer)
-    if (ds->selected && !ds->reader_head && (!ds->skip_to_keyframe || dp->keyframe)) {
+    if (!ds->reader_head && (!ds->skip_to_keyframe || dp->keyframe)) {
         ds->reader_head = dp;
         ds->skip_to_keyframe = false;
     }
@@ -2903,6 +2903,28 @@ static int dequeue_packet(struct demux_stream *ds, double min_pts,
 
     struct demux_packet *pkt = advance_reader_head(ds);
     mp_assert(pkt);
+
+    // Keep unselected audio streams in sync with active playback.
+    // This prevents fw_bytes from overflowing and allows proper backward pruning.
+    if (ds->selected) {
+        double current_dts = MP_PTS_OR_DEF(pkt->dts, pkt->pts);
+        if (current_dts != MP_NOPTS_VALUE) {
+            for (int i = 0; i < in->num_streams; i++) {
+                struct demux_stream *ods = in->streams[i]->ds;
+                if (!ods->selected && ods->type == STREAM_AUDIO && ods->reader_head) {
+                    while (ods->reader_head) {
+                        double odts = MP_PTS_OR_DEF(ods->reader_head->dts, ods->reader_head->pts);
+                        if (odts != MP_NOPTS_VALUE && odts < current_dts) {
+                            advance_reader_head(ods);
+                        } else {
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+    }
+    
     pkt = read_packet_from_cache(in, pkt);
     if (!pkt)
         return 0;
@@ -4292,6 +4314,8 @@ static bool select_track(struct demux_internal *in,
             struct demux_packet *target = find_seek_target(ds->queue, ref_pts, 0);
             if (target) {
                 ds->reader_head = target;
+                ds->skip_to_keyframe = false;
+                ds->base_ts = MP_PTS_OR_DEF(target->pts, target->dts);
             } else {
                 refresh_track(in, stream, ref_pts);
             }
